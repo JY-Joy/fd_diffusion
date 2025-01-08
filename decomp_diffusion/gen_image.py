@@ -5,10 +5,7 @@ import torch as th
 from torchvision.utils import make_grid, save_image
 from imageio import imread
 from skimage.transform import resize as imresize
-
-# fix randomness
-th.manual_seed(0)
-np.random.seed(0)
+from accelerate.utils import set_seed
 
 
 def get_im(im_path='clevr_im_10.png', resolution=64):
@@ -50,7 +47,7 @@ def gen_image(model, gd, sample_method='ddim', batch_size=1, image_size=64, devi
     save_image(grid, os.path.join(save_dir, f'{dataset}_{image_size}{desc}.png'))
 
 
-def gen_image_and_components(model, gd, separate=False, num_components=4, sample_method='ddim', im_path='clevr_im_10.png', batch_size=1, image_size=64, device='cuda', model_kwargs=None):
+def gen_image_and_components(model, gd, seed=3467, separate=False, num_components=4, sample_method='ddim', im_path='clevr_im_10.png', batch_size=1, image_size=64, device='cuda', model_kwargs=None):
     """Generate row of orig image, individual components, and reconstructed image"""
     orig_img = get_im(im_path, resolution=image_size)
 
@@ -64,6 +61,7 @@ def gen_image_and_components(model, gd, separate=False, num_components=4, sample
     # individual components
     if separate:
         for j in range(num_components-1, -1, -1):
+            set_seed(seed)
             model_kwargs['latent_index'] = j
             sample = sample_loop_func(
                 model,
@@ -76,9 +74,11 @@ def gen_image_and_components(model, gd, separate=False, num_components=4, sample
                 num_components=num_components
             )[-1]
             all_samples.append(sample)
+        return all_samples
 
     # reconstruction
     model_kwargs['latent_index'] = None
+    set_seed(seed)
     sample = sample_loop_func(
         model,
         (batch_size, 3, image_size, image_size),
@@ -206,7 +206,7 @@ def get_model_fn(model, gd, batch_size=1, guidance_scale=10.0, device='cuda'):
     return model_fn
 
 
-def get_gen_images(model, gd, sample_method='ddim', im_path='clevr_im_10.png', latent=None, batch_size=1, image_size=64, device='cuda', model_kwargs=None, free=False, guidance_scale=10.0, separate=False):
+def get_gen_images(model, gd, seed=3467, sample_method='ddim', im_path='clevr_im_10.png', latent=None, batch_size=1, image_size=64, device='cuda', model_kwargs=None, free=False, guidance_scale=10.0, separate=False):
     orig_im = get_im(im_path=im_path, resolution=image_size)
     if latent == None:
         latent = model.encode_latent(orig_im)
@@ -222,7 +222,7 @@ def get_gen_images(model, gd, sample_method='ddim', im_path='clevr_im_10.png', l
     gen_model = model if not free else get_model_fn(model, gd, batch_size=batch_size, guidance_scale=guidance_scale)
 
     images = gen_image_and_components(
-        gen_model, gd,
+        gen_model, gd, seed=seed,
         separate=separate, num_components=model.num_components,
         sample_method=sample_method, im_path=im_path,
         batch_size=batch_size, image_size=image_size, device=device,
@@ -231,14 +231,14 @@ def get_gen_images(model, gd, sample_method='ddim', im_path='clevr_im_10.png', l
 
     return images
 
-def combine_components_slice(model, gd, indices=None, sample_method='ddim', im1='clevr_im_10.png', im2='clevr_im_25.png', device='cuda', model_kwargs={}, image_size=64, separate=False):
+def combine_components_slice(model, gd, seed=3467, indices=None, sample_method='ddim', im1='clevr_im_10.png', im2='clevr_im_25.png', device='cuda', model_kwargs={}, image_size=64, separate=False):
     """Combine by adding components together
     """
     assert sample_method in ('ddpm', 'ddim')
 
     im1 = get_im(im_path=im1, resolution=image_size)
     im2 = get_im(im_path=im2, resolution=image_size)
-    all_samples = [im1, im2]
+    all_samples = [im2, im1]
 
     latent1 = model.encode_latent(im1)
     latent2 = model.encode_latent(im2)
@@ -272,6 +272,7 @@ def combine_components_slice(model, gd, indices=None, sample_method='ddim', im1=
     # individual components
     if separate:
         for j in range(num_comps-1, -1, -1):
+            set_seed(seed)
             model_kwargs['latent_index'] = j
             sample = sample_loop_func(
                 model,
@@ -284,6 +285,7 @@ def combine_components_slice(model, gd, indices=None, sample_method='ddim', im1=
                 num_components=num_comps
             )[-1]
             all_samples.append(sample)
+        return all_samples
     
     # sampling loop
     sample = sample_loop_func(
@@ -311,14 +313,14 @@ def get_combined_model_add(model, latent1, latent2):
     return gen_model
 
 
-def combine_components_add(model, gd, sample_method='ddim', im1='clevr_im_10.png', im2='clevr_im_25.png', indices=None, device='cuda', model_kwargs={}, image_size=64, separate=False):
+def combine_components_add(model, gd, seed=3467, sample_method='ddim', im1='clevr_im_10.png', im2='clevr_im_25.png', indices=None, device='cuda', model_kwargs={}, image_size=64, separate=False):
     """Combine by adding components together
     """
     assert sample_method in ('ddpm', 'ddim')
 
     im1 = get_im(im_path=im1, resolution=image_size)
     im2 = get_im(im_path=im2, resolution=image_size)
-    all_samples = [im1, im2]
+    all_samples = [im2, im1]
 
     latent1 = model.encode_latent(im1)
     latent2 = model.encode_latent(im2)
@@ -334,6 +336,7 @@ def combine_components_add(model, gd, sample_method='ddim', im1='clevr_im_10.png
     # individual components
     if separate:
         for j in range(num_comps-1, -1, -1):
+            set_seed(seed)
             model_kwargs['latent_index'] = j
             sample = sample_loop_func(
                 gen_model,
@@ -346,6 +349,7 @@ def combine_components_add(model, gd, sample_method='ddim', im1='clevr_im_10.png
                 num_components=num_comps
             )[-1]
             all_samples.append(sample)
+        return all_samples
     
     sample = sample_loop_func(
             gen_model,

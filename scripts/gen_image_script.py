@@ -11,10 +11,7 @@ from decomp_diffusion.image_datasets import get_dataset
 from decomp_diffusion.model_and_diffusion_util import *
 from decomp_diffusion.diffusion.respace import SpacedDiffusion
 from decomp_diffusion.gen_image import *
-
-# fix randomness
-th.manual_seed(0)
-np.random.seed(0)
+from accelerate.utils import set_seed
 
 
 if __name__=='__main__':
@@ -35,6 +32,7 @@ if __name__=='__main__':
     parser.add_argument('--ckpt_path', required=True)
     parser.add_argument('--ckpt_path2', default=None, help="for cross-dataset")
 
+    parser.add_argument('--seed', default=3467, type=int)
     parser.add_argument('--save_dir', required=True)
     parser.add_argument('--free', action='store_true')
     parser.add_argument('--guidance_scale', type=float, default=10.0)
@@ -56,6 +54,7 @@ if __name__=='__main__':
 
     has_cuda = th.cuda.is_available()
     device = th.device('cpu' if not has_cuda else 'cuda')
+    set_seed(args.seed)
 
     ckpt_path = args.ckpt_path
     save_dir = args.save_dir
@@ -142,7 +141,7 @@ if __name__=='__main__':
 
     elif combine_method is None:
         images = get_gen_images(
-            model, gd,
+            model, gd, seed=args.seed,
             sample_method=sample_method, im_path=args.im_path, image_size=image_size,
             device=device, guidance_scale=guidance_scale, free=free,
             separate=separate,
@@ -153,7 +152,7 @@ if __name__=='__main__':
         elif combine_method == 'add':
             combine_func = combine_components_add
         images = combine_func(
-            model, gd,
+            model, gd, seed=args.seed,
             im1=args.im_path, im2=args.im_path2, image_size=image_size,
             indices=indices, sample_method=sample_method, separate=separate,
         )

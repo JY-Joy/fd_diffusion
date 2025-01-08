@@ -432,7 +432,7 @@ class UNetModel(nn.Module):
         self.num_heads_upsample = num_heads_upsample
 
         self.emb_dim = emb_dim
-        time_embed_dim = 128        # hard coded
+        time_embed_dim = 128
         self.time_embed_dim = time_embed_dim
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
@@ -631,22 +631,17 @@ class UNetModel(nn.Module):
 
         s = x.size()
         b = s[0]
-        if latent_index is None:
-            # duplicate latent, time_emb, and x enough times
-            latents = latent.chunk(self.num_components, dim=1)
-            latent = th.cat(latents, dim=0)
-            time_emb = th.cat([time_emb] * self.num_components, dim=0)
-            x = th.cat([x] * self.num_components, dim=0)
-
-            # Latent drop-out
-            latent_mask = []
-            for i in range(self.num_components):
-                latent_mask.append((t >= i / self.num_components * self.num_timesteps) & (t < (i + 1) / self.num_components * self.num_timesteps))
-            latent_mask = th.cat(latent_mask, dim=0)
-        else:
-            # take given slice
-            latents = latent.chunk(self.num_components, dim=1)
-            latent = latents[latent_index]
+        batch_t = th.stack([t]*self.num_components, dim=1)
+        start = th.arange(self.num_components) / self.num_components * self.num_timesteps
+        start = th.stack([start] * b, dim=0).to(batch_t.device)
+        end = th.arange(1, self.num_components + 1) / self.num_components * self.num_timesteps
+        end = th.stack([end] * b, dim=0).to(batch_t.device)
+        if latent_index is not None:
+            start[:, :latent_index+1] = 0
+            end[:, :latent_index] = 0
+        latent_mask = (batch_t >= start) & (batch_t < end)
+        latents = latent.view(b, self.num_components, -1) * latent_mask.view(b, self.num_components, 1).to(latent.dtype)
+        latent = latents.sum(dim=1)
 
         # concat
         emb = th.cat((latent, time_emb), 1)
@@ -666,10 +661,10 @@ class UNetModel(nn.Module):
         o = self.out(h)
 
         s = o.size()
-        if latent_index is None:
-            # apply mask
-            o = o * latent_mask.view(s[0], 1, 1, 1).to(o.dtype)
-            os = o.chunk(self.num_components, dim=0)
-            o = th.stack(os, dim=1)
-            o = o.sum(dim=1)
+        # if latent_index is None:
+        #     # apply mask
+        #     o = o * latent_mask.view(s[0], 1, 1, 1).to(o.dtype)
+        #     os = o.chunk(self.num_components, dim=0)
+        #     o = th.stack(os, dim=1)
+        #     o = o.sum(dim=1)
         return o
