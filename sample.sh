@@ -1,0 +1,12 @@
+python3 scripts/gen_image_script.py \
+  --ckpt_path /apdcephfs/default121133/apdcephfs_qy3/share_301812049/jentsehuang/decomp_diffusion/celebahq/unet_model_celebahq_None_xstart_emb_384_implementation_1_256x4latent_batch40x8/checkpoint-40000/model.safetensors \
+  --save_dir ./sample_images/ \
+  --image_size 128 \
+  --im_path2 ./val_imgs/celebahq_0.jpg \
+  --im_path ./val_imgs/celebahq_7.jpg \
+  --dataset celebahq \
+  --num_components 4 \
+  --emb_dim 384 \
+  --separate \
+  --seed 42
+  --combine_method add
