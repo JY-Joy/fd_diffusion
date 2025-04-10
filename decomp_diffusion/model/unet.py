@@ -391,6 +391,7 @@ class UNetModel(nn.Module):
             num_res_blocks,
             attention_resolutions,
             emb_dim=256,
+            time_embed_dim=128,
             enc_channels=64,
             dropout=0,
             channel_mult=(1, 2, 4, 8),
@@ -432,7 +433,7 @@ class UNetModel(nn.Module):
         self.num_heads_upsample = num_heads_upsample
 
         self.emb_dim = emb_dim
-        time_embed_dim = 128
+        self.time_embed_dim = time_embed_dim        # hard coded
         self.time_embed_dim = time_embed_dim
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
@@ -631,17 +632,24 @@ class UNetModel(nn.Module):
 
         s = x.size()
         b = s[0]
+        # duplicate latent, time_emb, and x enough times
+        # batch-first order
+        latent = latent.reshape(b * self.num_components, self.latent_dim)
+        time_emb = th.repeat_interleave(time_emb, self.num_components, dim=0)
+        x = th.repeat_interleave(x, self.num_components, dim=0)
         batch_t = th.stack([t]*self.num_components, dim=1)
+
+        # Latent drop-out
         start = th.arange(self.num_components) / self.num_components * self.num_timesteps
         start = th.stack([start] * b, dim=0).to(batch_t.device)
         end = th.arange(1, self.num_components + 1) / self.num_components * self.num_timesteps
         end = th.stack([end] * b, dim=0).to(batch_t.device)
         if latent_index is not None:
-            start[:, :latent_index+1] = 0
+            start[:, latent_index] = 0
             end[:, :latent_index] = 0
-        latent_mask = (batch_t >= start) & (batch_t < end)
-        latents = latent.view(b, self.num_components, -1) * latent_mask.view(b, self.num_components, 1).to(latent.dtype)
-        latent = latents.sum(dim=1)
+        latent_mask = (batch_t < end)
+        learning_index = (batch_t >= start) & (batch_t < end)
+        latent_mask = ~learning_index & latent_mask
 
         # concat
         emb = th.cat((latent, time_emb), 1)
@@ -661,10 +669,15 @@ class UNetModel(nn.Module):
         o = self.out(h)
 
         s = o.size()
-        # if latent_index is None:
-        #     # apply mask
-        #     o = o * latent_mask.view(s[0], 1, 1, 1).to(o.dtype)
-        #     os = o.chunk(self.num_components, dim=0)
-        #     o = th.stack(os, dim=1)
-        #     o = o.sum(dim=1)
+        # apply mask
+        prev_o = o.detach()
+        prev_o = prev_o * latent_mask.view(s[0], 1, 1, 1).to(o.dtype)
+        o = o * learning_index.view(s[0], 1, 1, 1).to(o.dtype)
+        o = o + prev_o
+        # number of summation elements
+        num_o = learning_index | latent_mask
+        num_o = num_o.sum(dim=1)
+        os = o.chunk(b, dim=0)
+        o = th.stack(os, dim=0)
+        o = o.sum(dim=1) / num_o.view(b, 1, 1, 1)
         return o

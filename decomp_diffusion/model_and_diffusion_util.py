@@ -5,9 +5,9 @@ from .diffusion.respace import SpacedDiffusion
 def create_unet_model(
         in_channels=3,
         image_size=64,
-        num_channels=64, # 128, #192,
+        num_channels=64,
         enc_channels=64,
-        num_res_blocks=2, # 3,
+        num_res_blocks=2,
         num_components=4, 
         channel_mult="",
         num_heads=1,
@@ -15,19 +15,12 @@ def create_unet_model(
         num_heads_upsample=-1,
         attention_resolutions="32,16,8",
         dropout=0.1,
-        # text_ctx=128,
-        # xf_width=512,
-        # xf_layers=16,
-        # xf_heads=8,
-        # xf_final_ln=True,
-        # xf_padding=True,
         steps=1000,
-        # noise_schedule="squaredcos_cap_v2",
-        # timestep_respacing="",
-        use_scale_shift_norm=False, # True, # False??
+        use_scale_shift_norm=False,
         resblock_updown=True,
         model_desc='unet_model',
-        emb_dim=256
+        emb_dim=256,
+        time_embed_dim=128
     ):
         # everything else False
 
@@ -58,8 +51,6 @@ def create_unet_model(
         dropout=dropout,
         channel_mult=channel_mult,
         num_timesteps=steps,
-        # num_classes=num_classes,
-        # use_fp16=use_fp16,
         num_heads=num_heads,
         num_head_channels=num_head_channels,
         num_heads_upsample=num_heads_upsample,
@@ -67,7 +58,8 @@ def create_unet_model(
         resblock_updown=resblock_updown,
         encoder_channels=None,
         image_size=image_size,
-        emb_dim=emb_dim
+        emb_dim=emb_dim,
+        time_embed_dim=time_embed_dim,
     )
     return unet
 
@@ -75,9 +67,9 @@ def unet_model_defaults():
     return dict(
         in_channels=3,
         image_size=64,
-        num_channels=64, # 128, #192,
+        num_channels=64,
         enc_channels=64,
-        num_res_blocks=2, # 3,
+        num_res_blocks=2,
         num_components=4,
         channel_mult="",
         num_heads=1,
@@ -85,24 +77,19 @@ def unet_model_defaults():
         num_heads_upsample=-1,
         attention_resolutions="32,16,8",
         dropout=0.1,
-        # text_ctx=128,
-        # xf_width=512,
-        # xf_layers=16,
-        # xf_heads=8,
-        # xf_final_ln=True,
-        # xf_padding=True,
         steps=1000,
-        # noise_schedule="squaredcos_cap_v2",
-        # timestep_respacing="",
-        use_scale_shift_norm=False, # True, # False??
+        use_scale_shift_norm=False,
         resblock_updown=True,
         model_desc='unet_model',
-        emb_dim=256
+        emb_dim=256,
+        time_embed_dim=64,
     )
 
 def create_diffusion_model(model_desc='unet_model', **model_kwargs):
     if model_desc == 'unet_model':
         model = create_unet_model(**model_kwargs)
+    else:
+        raise NotImplementedError(f"Model {model_desc} not implemented")
     return model
 
 
@@ -129,7 +116,7 @@ def model_defaults():
         filter_dim=16,                  # deprecated
         emb_dim=256,                    # overwrote by unet_model_defaults
         num_components=4,               # overwrote by unet_model_defaults
-        model_desc='decomp_diffusion',  # overwrote by unet_model_defaults
+        model_desc='Segment_diffusion', # overwrote by unet_model_defaults
         image_size=64 # added           # overwrote by unet_model_defaults
     )
 

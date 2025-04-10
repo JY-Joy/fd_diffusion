@@ -56,8 +56,8 @@ def main():
     downweight = args.downweight
     image_size = args.image_size
 
-    predict_type = 'xstart' if predict_mean else 'eps'    #  UNet output
-    trial_desc = f'{model_desc}_{dataset}_{num_images}_{predict_type}_emb_{args.emb_dim}'
+    predict_type = 'xstart' if predict_mean else 'eps'
+    trial_desc = f'{dataset}_{predict_type}_emb_{args.emb_dim}_comp_{args.num_components}'
     p_uncond = args.p_uncond
     if p_uncond > 0:
         trial_desc += '_CFG'
@@ -82,7 +82,7 @@ def main():
     logger.info(accelerator.state, main_process_only=False)
 
     if args.seed is not None:
-        set_seed(args.seed)
+        set_seed(args.seed)  
 
     # Handle the repository creation
     if accelerator.is_main_process:
@@ -93,6 +93,8 @@ def main():
     logger.info("creating model and diffusion...")
     training_model_defaults = unet_model_defaults() if model_desc == 'unet_model' else model_defaults()
     model_kwargs = args_to_dict(args, training_model_defaults.keys())
+    print(model_kwargs["attention_resolutions"])
+    exit()
     model = create_diffusion_model(**model_kwargs)
 
     diffusion_kwargs = args_to_dict(args, diffusion_defaults().keys())
@@ -251,8 +253,6 @@ def create_argparser():
         fp16_scale_growth=1e-3,
     )
     defaults.update(training_defaults())
-
-    defaults.update(model_defaults())
 
     defaults.update(diffusion_defaults())
     defaults.update(unet_model_defaults())

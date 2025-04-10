@@ -101,15 +101,18 @@ def run_loop(accelerator, model, gd, train_dataloader, optimizer, args, global_s
                         th.save(ema_model.state_dict(), os.path.join(args.output_dir, f"checkpoint-{global_step}", f'ema_{ema_rate}_model_ckpt.pt'))
                         print(f"Saved state to {save_path}")
                 if global_step % args.validation_steps == 0:
-                    im_path=f"./val_imgs/{dataset}.jpg"
-                    images = get_gen_images(
-                        accelerator.unwrap_model(model), ddim_gd, image_size=image_size,
-                        im_path=im_path, device=accelerator.device, free=use_CFG, sample_method='ddim',
-                    )
-                    for tracker in accelerator.trackers:
-                        if tracker.name == "tensorboard":
-                            np_images = th.cat(images, dim=0).cpu().numpy()
-                            tracker.writer.add_images("validation", np_images, global_step, dataformats="NCHW")
+                    with th.no_grad():
+                        im_path=f"./val_imgs/{dataset}.jpg"
+                        images = get_gen_images(
+                            accelerator.unwrap_model(model), ddim_gd, seed=args.seed,
+                            sample_method='ddim', im_path=im_path, image_size=image_size,
+                            device=accelerator.device, free=use_CFG, guidance_scale=10.0,
+                            separate=True,
+                        )
+                        for tracker in accelerator.trackers:
+                            if tracker.name == "tensorboard":
+                                np_images = th.cat(images, dim=0).clip(-1,1).cpu().numpy()
+                                tracker.writer.add_images("validation", np_images, global_step, dataformats="NCHW")
 
             logs = {"loss": loss.detach().item()}
             progress_bar.set_postfix(**logs)

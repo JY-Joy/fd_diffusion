@@ -159,7 +159,7 @@ class GaussianDiffusion:
             target = x_start
         else:
             target = noise
-        assert model_output.shape == target.shape == x_start.shape
+        assert model_output.shape == target.shape == x_start.shape, f"shape mismatch: {model_output.shape} {target.shape} {x_start.shape}"
         mse = mean_flat((target - model_output) ** 2) # b x 1
         if downweight: # later timesteps get less weight
             c = np.log(2) / self.num_timesteps 
