@@ -301,6 +301,9 @@ class LatentEncoder(nn.Module):
             ):
         super().__init__()
 
+        self.num_components = num_components
+        self.out_dim = out_dim
+        
         ch = input_ch = int(channel_mult[0] * model_channels)
         self.input_blocks = nn.ModuleList(
             [conv_nd(dims, in_channels, ch, 3, padding=1)]
@@ -364,10 +367,10 @@ class LatentEncoder(nn.Module):
                 self.output_blocks.append(nn.Sequential(*layers))
             ds //= 2
 
-        self.out = nn.Sequential(
+        self.feat_head = nn.Sequential(
             normalization(ch, swish=1.0),
             nn.Identity(),
-            zero_module(conv_nd(dims, input_ch, out_dim, 3, padding=1)),
+            zero_module(conv_nd(dims, input_ch, out_dim*num_components, 3, padding=1)),
         )
 
         self.mask_head = nn.Sequential(
@@ -376,8 +379,33 @@ class LatentEncoder(nn.Module):
             zero_module(conv_nd(dims, input_ch, num_components, 3, padding=1)),
         )
 
-    def forward(self, x):
-        return self.encoder(x)
+    def forward(self, x, latent_index = None):
+
+        s = x.size()
+        b = s[0]
+
+        hs = []
+        h = x.type(self.dtype)
+
+        for module in self.input_blocks:
+            h = module(h)
+            hs.append(h)
+        for module in self.output_blocks:
+            h = th.cat([h, hs.pop()], dim=1)
+            h = module(h)
+
+        # out
+        h = h.type(x.dtype)
+        mask_logits = self.mask_head(h)
+        mask = F.softmax(mask_logits, dim=1)
+
+        # TODO: filter out features from other components
+
+        o = self.feat_head(h)
+        o = o.reshape(b, self.num_components, self.out_dim, *s[2:])
+        masked_o = th.einsum('bnkhw,bnhw->bkhw', o, mask)
+
+        return masked_o, mask
 
 
 def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
@@ -699,22 +727,12 @@ class UNetModel(nn.Module):
         if x_start != None:
             latent = self.encode_latent(x_start)
 
-        time_emb = self.time_embed(timestep_embedding(t, self.model_channels))
-
-        s = x.size()
-        b = s[0]
-        # duplicate latent, time_emb, and x enough times
-        # batch-first order
-        latent = latent.reshape(b * self.num_components, self.latent_dim)
-        time_emb = th.repeat_interleave(time_emb, self.num_components, dim=0)
-        x = th.repeat_interleave(x, self.num_components, dim=0)
-
-        # concat
-        emb = th.cat((latent, time_emb), 1)
-
+        emb = self.time_embed(timestep_embedding(t, self.model_channels))
 
         hs = []
         h = self.conv_in(x.type(self.dtype))
+        # concat
+        emb = th.cat((h, latent), 1)
         hs.append(h)
 
         for module in self.input_blocks:
@@ -727,16 +745,4 @@ class UNetModel(nn.Module):
         h = h.type(x.dtype)
         o = self.out(h)
 
-        s = o.size()
-        # apply mask
-        prev_o = o.detach()
-        prev_o = prev_o * latent_mask.view(s[0], 1, 1, 1).to(o.dtype)
-        o = o * learning_index.view(s[0], 1, 1, 1).to(o.dtype)
-        o = o + prev_o
-        # number of summation elements
-        num_o = learning_index | latent_mask
-        num_o = num_o.sum(dim=1)
-        os = o.chunk(b, dim=0)
-        o = th.stack(os, dim=0)
-        o = o.sum(dim=1) / num_o.view(b, 1, 1, 1)
         return o
