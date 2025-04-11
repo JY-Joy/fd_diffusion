@@ -93,9 +93,9 @@ def main():
     logger.info("creating model and diffusion...")
     training_model_defaults = unet_model_defaults() if model_desc == 'unet_model' else model_defaults()
     model_kwargs = args_to_dict(args, training_model_defaults.keys())
-    print(model_kwargs["attention_resolutions"])
-    exit()
     model = create_diffusion_model(**model_kwargs)
+    print(model_kwargs["use_checkpoint"])
+    exit()
 
     diffusion_kwargs = args_to_dict(args, diffusion_defaults().keys())
     gd = create_gaussian_diffusion(**diffusion_kwargs)

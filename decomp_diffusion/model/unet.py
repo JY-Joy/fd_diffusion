@@ -283,28 +283,98 @@ class QKVAttention(nn.Module):
 
 
 class LatentEncoder(nn.Module):
-    def __init__(self, in_channels, enc_channels, kernel_size, image_size, encode_depth, out_dim):
+    def __init__(
+            self,
+            in_channels,
+            model_channels,
+            kernel_size,
+            image_size,
+            out_dim,
+            num_components,
+            dropout=0,
+            dims=2,
+            num_res_blocks=1,
+            channel_mult=(1, 2, 4, 8),
+            attention_resolutions=(),
+            use_checkpoint=False,
+            use_scale_shift_norm=False,
+            ):
         super().__init__()
-        self.in_channels = in_channels
-        self.out_dim = out_dim
-        depth_factor = 2**encode_depth
-        reduced_size = image_size
-        for i in range(encode_depth):
-            reduced_size = (1 + reduced_size) // 2 # halved (ceiling) after each conv
-        activ = nn.ReLU
-        layers = [nn.Conv2d(in_channels, enc_channels, kernel_size=kernel_size, stride=1, padding=1), activ()]
-        enc = enc_channels
-        for i in range(encode_depth):
-            layers.append(BasicBlock(enc, enc))
-            layers.append(activ())
-            layers.append(nn.Conv2d(enc, 2 * enc, kernel_size, stride=2, padding=1))
-            layers.append(activ())
-            enc *= 2
-        
-        layers.append(nn.Flatten())
-        layers.append(nn.Linear(enc * reduced_size * reduced_size, out_dim))
-        layers.append(activ())
-        self.encoder = nn.Sequential(*layers)
+
+        ch = input_ch = int(channel_mult[0] * model_channels)
+        self.input_blocks = nn.ModuleList(
+            [conv_nd(dims, in_channels, ch, 3, padding=1)]
+        )
+        input_block_chans = [ch]
+        ds = 1
+        for level, mult in enumerate(channel_mult):
+            for block_id in range(num_res_blocks):
+                layers = [
+                    BasicBlock(
+                        ch,
+                        dropout,
+                        out_channels=int(mult * model_channels),
+                        dims=dims,
+                        use_checkpoint=use_checkpoint,
+                        use_scale_shift_norm=use_scale_shift_norm,
+                        down = (block_id==num_res_blocks-1)
+                    )
+                ]
+                ch = int(mult * model_channels)
+                if ds in attention_resolutions:
+                    layers.append(
+                        AttentionBlock(
+                            ch,
+                            use_checkpoint=use_checkpoint,
+                            num_heads=num_heads,
+                            num_head_channels=num_head_channels,
+                            encoder_channels=encoder_channels,
+                        )
+                    )
+                input_block_chans.append(ch)
+            input_block_chans.append(ch)
+            ds *= 2
+
+        self.output_blocks = nn.ModuleList([])
+        for level, mult in list(enumerate(channel_mult))[::-1]:
+            for i in range(num_res_blocks + 1):
+                ich = input_block_chans.pop()
+                layers = [
+                    BasicBlock(
+                        ch + ich,
+                        dropout,
+                        out_channels=int(model_channels * mult),
+                        dims=dims,
+                        use_checkpoint=use_checkpoint,
+                        use_scale_shift_norm=use_scale_shift_norm,
+                        up = level and (i==num_res_blocks)
+                    )
+                ]
+                ch = int(model_channels * mult)
+                if ds in attention_resolutions:
+                    layers.append(
+                        AttentionBlock(
+                            ch,
+                            use_checkpoint=use_checkpoint,
+                            num_heads=num_heads_upsample,
+                            num_head_channels=num_head_channels,
+                            encoder_channels=encoder_channels,
+                        )
+                    )
+                self.output_blocks.append(nn.Sequential(*layers))
+            ds //= 2
+
+        self.out = nn.Sequential(
+            normalization(ch, swish=1.0),
+            nn.Identity(),
+            zero_module(conv_nd(dims, input_ch, out_dim, 3, padding=1)),
+        )
+
+        self.mask_head = nn.Sequential(
+            normalization(ch, swish=1.0),
+            nn.Identity(),
+            zero_module(conv_nd(dims, input_ch, num_components, 3, padding=1)),
+        )
 
     def forward(self, x):
         return self.encoder(x)
@@ -318,41 +388,67 @@ def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
 class BasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None, groups=1,
-                 base_width=64, dilation=1, norm_layer=None):
+    def __init__(
+            self,
+            channels,
+            dropout,
+            out_channels=None,
+            use_conv=False,
+            use_scale_shift_norm=False,
+            dims=2,
+            use_checkpoint=False,
+            up=False,
+            down=False,
+        ):
         super(BasicBlock, self).__init__()
-        if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
-        if groups != 1 or base_width != 64:
-            raise ValueError('BasicBlock only supports groups=1 and base_width=64')
-        if dilation > 1:
-            raise NotImplementedError("Dilation > 1 not supported in BasicBlock")
-        # Both self.conv1 and self.downsample layers downsample the input when stride != 1
-        self.conv1 = conv3x3(inplanes, planes, stride)
-        self.bn1 = norm_layer(planes)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv2 = conv3x3(planes, planes)
-        self.bn2 = norm_layer(planes)
-        self.downsample = downsample
-        self.stride = stride
+        self.channels = channels
+        self.dropout = dropout
+        self.out_channels = out_channels or channels
+        self.use_conv = use_conv
+        self.use_checkpoint = use_checkpoint
+
+        self.in_layers = nn.Sequential(
+            normalization(channels, swish=1.0),
+            nn.Identity(),
+            conv_nd(dims, channels, self.out_channels, 3, padding=1),
+        )
+
+        self.updown = up or down
+
+        if up:
+            self.h_upd = Upsample(channels, False, dims)
+            self.x_upd = Upsample(channels, False, dims)
+        elif down:
+            self.h_upd = Downsample(channels, False, dims)
+            self.x_upd = Downsample(channels, False, dims)
+        else:
+            self.h_upd = self.x_upd = nn.Identity()
+
+        self.out_layers = nn.Sequential(
+            normalization(self.out_channels, swish=0.0 if use_scale_shift_norm else 1.0),
+            nn.SiLU() if use_scale_shift_norm else nn.Identity(),
+            nn.Dropout(p=dropout),
+            zero_module(conv_nd(dims, self.out_channels, self.out_channels, 3, padding=1)),
+        )
+
+        if self.out_channels == channels:
+            self.skip_connection = nn.Identity()
+        elif use_conv:
+            self.skip_connection = conv_nd(dims, channels, self.out_channels, 3, padding=1)
+        else:
+            self.skip_connection = conv_nd(dims, channels, self.out_channels, 1)
 
     def forward(self, x):
-        identity = x
-
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-
-        out = self.conv2(out)
-        out = self.bn2(out)
-
-        if self.downsample is not None:
-            identity = self.downsample(x)
-
-        out += identity
-        out = self.relu(out)
-
-        return out
+        if self.updown:
+            in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
+            h = in_rest(x)
+            h = self.h_upd(h)
+            x = self.x_upd(x)
+            h = in_conv(h)
+        else:
+            h = self.in_layers(x)
+        h = self.out_layers(h)
+        return self.skip_connection(x) + h
     
 class UNetModel(nn.Module):
     """
@@ -399,7 +495,6 @@ class UNetModel(nn.Module):
             dims=2,
             num_classes=None,
             use_checkpoint=False,
-            use_fp16=False,
             num_heads=1,
             num_head_channels=-1,
             num_heads_upsample=-1,
@@ -427,7 +522,6 @@ class UNetModel(nn.Module):
         self.num_classes = num_classes
         self.dataset = dataset
         self.use_checkpoint = use_checkpoint
-        self.dtype = th.float16 if use_fp16 else th.float32
         self.num_heads = num_heads
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
@@ -443,20 +537,18 @@ class UNetModel(nn.Module):
 
         self.num_components = num_components
         self.num_timesteps = num_timesteps
-        self.image_size = image_size 
+        self.image_size = image_size
+        ch = input_ch = int(channel_mult[0] * model_channels)
 
-        self.latent_dim = self.emb_dim - self.time_embed_dim
+        self.latent_dim = input_ch // 2
 
-        self.latent_dim_expand = self.latent_dim * self.num_components
         print(f'emb_dim: {emb_dim}')
         print(f'time_embed_dim: {time_embed_dim}')
-        print(f'latent_dim_expand: {self.latent_dim_expand}/{self.num_components}')
+        print(f'latent_dim_expand: {self.latent_dim} x {self.num_components}')
+        assert emb_dim == time_embed_dim
 
-
-        ch = input_ch = int(channel_mult[0] * model_channels)
-        self.input_blocks = nn.ModuleList(
-            [TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=1))]
-        )
+        self.conv_in = TimestepEmbedSequential(conv_nd(dims, in_channels, ch//2, 3, padding=1))
+        self.input_blocks = nn.ModuleList([])
         self._feature_size = ch
         input_block_chans = [ch]
         ds = 1
@@ -588,35 +680,14 @@ class UNetModel(nn.Module):
             nn.Identity(),
             zero_module(conv_nd(dims, input_ch, out_channels, 3, padding=1)),
         )
-        self.use_fp16 = use_fp16
 
         # latent encoder
         kernel_size = 3
-        encode_depth = 3
-        out_dim = self.latent_dim_expand
-
-        depth_factor = 2**encode_depth
-        reduced_size = image_size
-        for i in range(encode_depth):
-            reduced_size = (1 + reduced_size) // 2 # halved (ceiling) after each conv
-        activ = nn.ReLU
-        layers = [nn.Conv2d(in_channels, enc_channels, kernel_size=kernel_size, stride=1, padding=1), activ()]
-        enc = enc_channels
-
-        for i in range(encode_depth):
-            layers.append(BasicBlock(enc, enc))
-            layers.append(activ())
-            layers.append(nn.Conv2d(enc, 2 * enc, kernel_size, stride=2, padding=1))
-            layers.append(activ())
-            enc *= 2
-
-        layers.append(nn.Flatten())
-        layers.append(nn.Linear(enc * reduced_size * reduced_size, out_dim))
-        layers.append(activ()) # can experiment with removing
-
-        self.latent_encoder = nn.Sequential(*layers)
-        # newer
-        # self.latent_encoder = LatentEncoder(in_channels, enc_channels, kernel_size, image_size, encode_depth, self.latent_dim_expand)
+        out_dim = self.latent_dim
+        self.latent_encoder = LatentEncoder(
+            in_channels, enc_channels, kernel_size, image_size, out_dim, self.num_components, dropout, dims,
+            channel_mult=channel_mult, use_checkpoint=use_checkpoint,
+        )
 
 
     def encode_latent(self, x):
@@ -637,26 +708,14 @@ class UNetModel(nn.Module):
         latent = latent.reshape(b * self.num_components, self.latent_dim)
         time_emb = th.repeat_interleave(time_emb, self.num_components, dim=0)
         x = th.repeat_interleave(x, self.num_components, dim=0)
-        batch_t = th.stack([t]*self.num_components, dim=1)
-
-        # Latent drop-out
-        start = th.arange(self.num_components) / self.num_components * self.num_timesteps
-        start = th.stack([start] * b, dim=0).to(batch_t.device)
-        end = th.arange(1, self.num_components + 1) / self.num_components * self.num_timesteps
-        end = th.stack([end] * b, dim=0).to(batch_t.device)
-        if latent_index is not None:
-            start[:, latent_index] = 0
-            end[:, :latent_index] = 0
-        latent_mask = (batch_t < end)
-        learning_index = (batch_t >= start) & (batch_t < end)
-        latent_mask = ~learning_index & latent_mask
 
         # concat
         emb = th.cat((latent, time_emb), 1)
 
 
         hs = []
-        h = x.type(self.dtype)
+        h = self.conv_in(x.type(self.dtype))
+        hs.append(h)
 
         for module in self.input_blocks:
             h = module(h, emb)
