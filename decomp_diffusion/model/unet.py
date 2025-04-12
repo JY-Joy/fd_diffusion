@@ -304,9 +304,9 @@ class LatentEncoder(nn.Module):
         self.num_components = num_components
         self.out_dim = out_dim
         
-        ch = input_ch = int(channel_mult[0] * model_channels)
+        ch = input_ch = model_channels
         self.input_blocks = nn.ModuleList(
-            [conv_nd(dims, in_channels, ch, 3, padding=1)]
+            [conv_nd(dims, in_channels, model_channels, 3, padding=1)]
         )
         input_block_chans = [ch]
         ds = 1
@@ -335,12 +335,20 @@ class LatentEncoder(nn.Module):
                         )
                     )
                 input_block_chans.append(ch)
-            input_block_chans.append(ch)
+                self.input_blocks.append(nn.Sequential(*layers))
             ds *= 2
 
+        self.middle_block = BasicBlock(
+            ch,
+            dropout,
+            dims=dims,
+            use_checkpoint=use_checkpoint,
+            use_scale_shift_norm=use_scale_shift_norm,
+        )
+        
         self.output_blocks = nn.ModuleList([])
         for level, mult in list(enumerate(channel_mult))[::-1]:
-            for i in range(num_res_blocks + 1):
+            for i in range(num_res_blocks):
                 ich = input_block_chans.pop()
                 layers = [
                     BasicBlock(
@@ -350,7 +358,7 @@ class LatentEncoder(nn.Module):
                         dims=dims,
                         use_checkpoint=use_checkpoint,
                         use_scale_shift_norm=use_scale_shift_norm,
-                        up = level and (i==num_res_blocks)
+                        up = (i==num_res_blocks-1)
                     )
                 ]
                 ch = int(model_channels * mult)
@@ -367,19 +375,25 @@ class LatentEncoder(nn.Module):
                 self.output_blocks.append(nn.Sequential(*layers))
             ds //= 2
 
+        ch = ch + input_block_chans.pop()
         self.feat_head = nn.Sequential(
             normalization(ch, swish=1.0),
             nn.Identity(),
-            zero_module(conv_nd(dims, input_ch, out_dim*num_components, 3, padding=1)),
+            zero_module(conv_nd(dims, ch, out_dim*num_components, 3, padding=1)),
         )
 
         self.mask_head = nn.Sequential(
             normalization(ch, swish=1.0),
             nn.Identity(),
-            zero_module(conv_nd(dims, input_ch, num_components, 3, padding=1)),
+            zero_module(conv_nd(dims, ch, num_components, 3, padding=1)),
         )
 
-    def forward(self, x, latent_index = None):
+
+    @property
+    def dtype(self):
+        return next(self.parameters()).dtype
+
+    def forward(self, x):
 
         s = x.size()
         b = s[0]
@@ -390,22 +404,21 @@ class LatentEncoder(nn.Module):
         for module in self.input_blocks:
             h = module(h)
             hs.append(h)
+        h = self.middle_block(h)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
             h = module(h)
+        h = th.cat([h, hs.pop()], dim=1)
 
         # out
-        h = h.type(x.dtype)
         mask_logits = self.mask_head(h)
         mask = F.softmax(mask_logits, dim=1)
 
         # TODO: filter out features from other components
 
         o = self.feat_head(h)
-        o = o.reshape(b, self.num_components, self.out_dim, *s[2:])
-        masked_o = th.einsum('bnkhw,bnhw->bkhw', o, mask)
 
-        return masked_o, mask
+        return o, mask
 
 
 def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
@@ -519,6 +532,7 @@ class UNetModel(nn.Module):
             enc_channels=64,
             dropout=0,
             channel_mult=(1, 2, 4, 8),
+            encoder_channel_mult=(2, 4, 8),
             conv_resample=True,
             dims=2,
             num_classes=None,
@@ -714,25 +728,45 @@ class UNetModel(nn.Module):
         out_dim = self.latent_dim
         self.latent_encoder = LatentEncoder(
             in_channels, enc_channels, kernel_size, image_size, out_dim, self.num_components, dropout, dims,
-            channel_mult=channel_mult, use_checkpoint=use_checkpoint,
+            channel_mult=encoder_channel_mult, use_checkpoint=use_checkpoint,
         )
 
+
+    @property
+    def dtype(self):
+        return next(self.parameters()).dtype
+    
 
     def encode_latent(self, x):
         return self.latent_encoder(x)
 
 
     def forward(self, x, t, x_start=None, latent=None, latent_index=None):
-        assert x_start != None or latent != None, "one of x_start and latent should be provided (precedence to latent)"
+        
+        # Segmentation model forward
+        assert x_start != None or isinstance(latent, tuple), "one of x_start and latent should be provided (precedence to latent)"
         if x_start != None:
-            latent = self.encode_latent(x_start)
+            latent, mask = self.encode_latent(x_start)
+            comp_latent = latent.chunk(self.num_components, dim=1)
+            comp_latent = th.cat(comp_latent, dim=0)
+        
+        batch_size = x.shape[0]
 
+        # select latent
+        # if latent_index is None:
+        #     latent_index = th.randint(0, self.num_components, (x.shape[0],), device=x.device)
+        # selected_latent = latent[th.arange(x.shape[0]), latent_index]
+        # selected_mask = mask[th.arange(x.shape[0]), latent_index].unsqueeze(1)
+
+        # diffusion UNet forward
         emb = self.time_embed(timestep_embedding(t, self.model_channels))
+        x = th.cat([x]*self.num_components, dim=0)
+        emb = th.cat([emb]*self.num_components, dim=0)
 
         hs = []
-        h = self.conv_in(x.type(self.dtype))
+        h = self.conv_in(x.type(self.dtype), emb)
         # concat
-        emb = th.cat((h, latent), 1)
+        h = th.cat((h, comp_latent), dim=1)
         hs.append(h)
 
         for module in self.input_blocks:
@@ -742,7 +776,11 @@ class UNetModel(nn.Module):
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
             h = module(h, emb)
+        
+        # ensemble component by mask
+        h = self.out(h)
+        h = h.reshape(batch_size, self.num_components, -1, h.shape[2], h.shape[3])
+        h = (h * mask.unsqueeze(2)).sum(dim=1)
         h = h.type(x.dtype)
-        o = self.out(h)
 
-        return o
+        return h

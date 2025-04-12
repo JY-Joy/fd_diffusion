@@ -10,6 +10,7 @@ def create_unet_model(
         num_res_blocks=2,
         num_components=4, 
         channel_mult="",
+        encoder_channel_mult="",
         num_heads=1,
         num_head_channels=64,
         num_heads_upsample=-1,
@@ -27,16 +28,21 @@ def create_unet_model(
     if channel_mult == "":
         if image_size == 64:
             channel_mult = (1, 2, 3) # (1, 2, 3, 4)
+            encoder_channel_mult = (2, 3)
         elif image_size == 128:
             channel_mult = (1, 2, 3, 4)
+            encoder_channel_mult = (2, 3, 4)
         elif image_size < 64: # eg 35
             channel_mult = (1, 2)
+            encoder_channel_mult = (2, 3)
     elif len(channel_mult) > 0: # passed in comma-delimited series of numbers
         channel_mult = channel_mult.split(',')
         channel_mult = [int(n) for n in channel_mult]
         channel_mult = tuple(channel_mult)
-        print('channel_mult: ', channel_mult)
-
+        encoder_channel_mult = encoder_channel_mult.split(',')
+        encoder_channel_mult = [int(n) for n in encoder_channel_mult]
+        encoder_channel_mult = tuple(encoder_channel_mult)
+        
     attention_ds = []
     for res in attention_resolutions.split(","):
         attention_ds.append(image_size // int(res))
@@ -50,6 +56,7 @@ def create_unet_model(
         attention_resolutions=tuple(attention_ds),
         dropout=dropout,
         channel_mult=channel_mult,
+        encoder_channel_mult=encoder_channel_mult,
         num_timesteps=steps,
         num_heads=num_heads,
         num_head_channels=num_head_channels,

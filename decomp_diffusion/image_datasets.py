@@ -1,3 +1,4 @@
+import os
 import torch as th
 from torch.utils.data import DataLoader, Dataset
 
@@ -35,7 +36,7 @@ class Data(Dataset):
     def __init__(self, base_dir, path='', resolution=64, start_index=0, num_images=None):
         self.resolution = resolution
         self.base_dir = base_dir
-        self.path = self.base_dir + path
+        self.path = os.path.join(base_dir, path)
         self.images = sorted(glob(self.path))
         self.start_index = start_index
         self.num_images = num_images
