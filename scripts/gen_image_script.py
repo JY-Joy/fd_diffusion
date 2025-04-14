@@ -69,8 +69,6 @@ if __name__=='__main__':
     image_size = args.image_size
     sample_method = args.sample_method
     num_images = args.num_images
-    separate = args.separate
-    combine_method = args.combine_method
     indices = args.indices
     data_dir = args.data_dir
 
@@ -117,47 +115,21 @@ if __name__=='__main__':
         num_digits = len(str(gen_images * step_size))
         data = get_dataset(dataset, base_dir=data_dir, num_images=gen_images * step_size, resolution=image_size).images
         data2 = get_dataset(dataset2, base_dir=data_dir, num_images=gen_images * step_size, resolution=image_size).images
-        if combine_method is None:
-            for _i in range(gen_images):
-                i = _i * step_size
-                im = data[i]
-                get_gen_images(model, gd, sample_method=sample_method, im_path=im, image_size=image_size, device=device, save_dir=save_dir, guidance_scale=guidance_scale, free=free, dataset=dataset, num_images=1, desc=f'im_{i:0{num_digits}}', separate=separate)
-        else:
-            if combine_method == 'slice':
-                combine_func = combine_components_slice
-            elif combine_method == 'add':
-                combine_func = combine_components_add
-            for _i in range(gen_images):
-                i = _i * step_size
-                print('_i', _i)
-                # save row for reference
-                get_gen_images(model, gd, separate=False, sample_method=sample_method, im_path=data[i], image_size=image_size, device=device, save_dir=save_dir, guidance_scale=guidance_scale, free=free, dataset=dataset, num_images=num_images, desc=f'im_{i:0{num_digits}}')
-                for _j in range(_i + 1, gen_images):
-                    j = _j * step_size
-                    if i == 0: # only save once on first pass
-                        get_gen_images(model, gd, separate=False, sample_method=sample_method, im_path=data2[j], image_size=image_size, device=device, save_dir=save_dir, guidance_scale=guidance_scale, free=free, dataset=dataset2, num_images=num_images, desc=f'im_{j:0{num_digits}}')
-                    
-                    combine_func(model, gd, im1=data[i], im2=data2[j], image_size=image_size, indices=indices, sample_method=sample_method, save_dir=save_dir, dataset=dataset, num_images=1, desc=f'comb{i}x{j}')
 
-    elif combine_method is None:
-        images = get_gen_images(
-            model, gd, seed=args.seed,
-            sample_method=sample_method, im_path=args.im_path, image_size=image_size,
-            device=device, guidance_scale=guidance_scale, free=free,
-            separate=separate,
-        )
-    else:
-        if combine_method == 'slice':
-            combine_func = combine_components_slice
-        elif combine_method == 'add':
-            combine_func = combine_components_add
-        images = combine_func(
-            model, gd, seed=args.seed,
-            im1=args.im_path, im2=args.im_path2, image_size=image_size,
-            indices=indices, sample_method=sample_method, separate=separate,
-        )
+    images = get_gen_images(
+        model, gd, seed=args.seed,
+        sample_method=sample_method, im_path=args.im_path, image_size=image_size,
+        device=device, guidance_scale=guidance_scale, free=free,
+        separate=args.separate,
+    )
 
+    if args.separate:
+        masks = images[1]
+        images = images[0]
     samples = th.cat(images, dim=0).cpu()
+    if args.separate:
+        masks = th.cat(masks, dim=0).cpu()
+        mask_grid = make_grid(masks, nrow=samples.shape[0], padding=0)
+        save_image(mask_grid, os.path.join(save_dir, f'{dataset}_mask_70k.png'))
     grid = make_grid(samples, nrow=samples.shape[0], padding=0)
-    # save row
-    save_image(grid, os.path.join(save_dir, f'{dataset}.png'))
+    save_image(grid, os.path.join(save_dir, f'{dataset}_70k.png'))

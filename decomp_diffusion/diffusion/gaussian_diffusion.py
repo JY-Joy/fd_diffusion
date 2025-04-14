@@ -511,7 +511,7 @@ class GaussianDiffusion:
             (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
         )  # no noise when t == 0
         sample = mean_pred + nonzero_mask * sigma * noise
-        return {"sample": sample, "pred_xstart": out["pred_xstart"]}
+        return {"sample": sample, "pred_xstart": out["pred_xstart"], "mask": out["extra"]}
 
     def ddim_reverse_sample(
         self,
@@ -563,16 +563,16 @@ class GaussianDiffusion:
         device=None,
         progress=False,
         eta=0.0,
-        num_components=0
+        num_components=0,
+        return_component=False
     ):
         """
         Generate samples from the model using DDIM.
 
         Same usage as p_sample_loop().
         """
-        final = None
         out_list = []
-        boundary = num_components - 1
+        mask_list = []
         pred_xstart = None
         for sample in self.ddim_sample_loop_progressive(
             model,
@@ -585,13 +585,15 @@ class GaussianDiffusion:
             device=device,
             progress=progress,
             eta=eta,
+            return_component=return_component,
+            num_components=num_components,
         ):
-            final, t = sample
-            if t < int(boundary/num_components*self.num_timesteps):
-                out_list.append(pred_xstart.clip(-1, 1))
-                boundary = boundary - 1
-            pred_xstart = final["pred_xstart"]
-        out_list.append(final["sample"].clip(-1, 1))
+            denoise_sample, t = sample
+        if return_component:
+            out_list.extend(th.chunk(denoise_sample["sample"].clip(-1, 1), num_components, dim=0))
+            mask_list.extend(th.chunk(denoise_sample["mask"].clip(-1, 1), num_components, dim=0))
+            return out_list, mask_list
+        out_list.append(denoise_sample["sample"].clip(-1, 1))
         return out_list
 
     def ddim_sample_loop_progressive(
@@ -606,6 +608,8 @@ class GaussianDiffusion:
         device=None,
         progress=False,
         eta=0.0,
+        return_component=False,
+        num_components=None,
     ):
         """
         Use DDIM to sample from the model and yield intermediate samples from
@@ -621,6 +625,9 @@ class GaussianDiffusion:
         else:
             img = th.randn(*shape, device=device)
         indices = list(range(self.num_timesteps))[::-1]
+        if return_component:
+            img = th.cat([img]*num_components, dim=0)
+            shape = (shape[0]*num_components, *shape[1:])
 
         if progress:
             # Lazy import so that we don't depend on tqdm.

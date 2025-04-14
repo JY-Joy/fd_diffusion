@@ -60,21 +60,23 @@ def gen_image_and_components(model, gd, seed=3467, separate=False, num_component
     all_samples = [orig_img]
     # individual components
     if separate:
-        for j in range(num_components-1, -1, -1):
-            set_seed(seed)
-            model_kwargs['latent_index'] = j
-            sample = sample_loop_func(
-                model,
-                (batch_size, 3, image_size, image_size),
-                device=device,
-                clip_denoised=True,
-                progress=True,
-                model_kwargs=model_kwargs,
-                cond_fn=None,
-                num_components=num_components
-            )[-1]
-            all_samples.append(sample)
-        return all_samples
+        mask_samples = []
+        set_seed(seed)
+        model_kwargs['return_component'] = True
+        sample = sample_loop_func(
+            model,
+            (batch_size, 3, image_size, image_size),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            cond_fn=None,
+            num_components=num_components,
+            return_component=True
+        )
+        all_samples.extend(sample[0])
+        mask_samples.extend(sample[1])
+        return all_samples, mask_samples
 
     # reconstruction
     model_kwargs['latent_index'] = None

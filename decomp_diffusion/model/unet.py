@@ -741,15 +741,21 @@ class UNetModel(nn.Module):
         return self.latent_encoder(x)
 
 
-    def forward(self, x, t, x_start=None, latent=None, latent_index=None):
+    def forward(self, x, t, x_start=None, latent=None, latent_index=None, return_component=False):
         
         # Segmentation model forward
-        assert x_start != None or isinstance(latent, tuple), "one of x_start and latent should be provided (precedence to latent)"
         if x_start != None:
             latent, mask = self.encode_latent(x_start)
-            comp_latent = latent.chunk(self.num_components, dim=1)
+        else:
+            assert isinstance(latent, tuple)
+            latent, mask = latent
+        comp_latent = latent.chunk(self.num_components, dim=1)
+        if latent_index is not None:
+            comp_latent = comp_latent[latent_index]
+            mask = mask[:, latent_index:latent_index+1]
+        else:
             comp_latent = th.cat(comp_latent, dim=0)
-        
+
         batch_size = x.shape[0]
 
         # select latent
@@ -760,8 +766,9 @@ class UNetModel(nn.Module):
 
         # diffusion UNet forward
         emb = self.time_embed(timestep_embedding(t, self.model_channels))
-        x = th.cat([x]*self.num_components, dim=0)
-        emb = th.cat([emb]*self.num_components, dim=0)
+        if latent_index is None and not return_component:
+            x = th.cat([x]*self.num_components, dim=0)
+            emb = th.cat([emb]*self.num_components, dim=0)
 
         hs = []
         h = self.conv_in(x.type(self.dtype), emb)
@@ -776,11 +783,19 @@ class UNetModel(nn.Module):
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
             h = module(h, emb)
-        
+
         # ensemble component by mask
         h = self.out(h)
+        if latent_index is not None:
+            h = h * mask
+            h = h.type(x.dtype)
+            return h, mask
+        if return_component:
+            mask = mask.reshape(self.num_components, -1, h.shape[2], h.shape[3])
+            h = (h * mask).to(dtype=x.dtype)
+            return h, mask
         h = h.reshape(batch_size, self.num_components, -1, h.shape[2], h.shape[3])
-        h = (h * mask.unsqueeze(2)).sum(dim=1)
-        h = h.type(x.dtype)
+        o = (h * mask.unsqueeze(2)).sum(dim=1)
+        o = o.to(dtype=x.dtype)
 
-        return h
+        return o

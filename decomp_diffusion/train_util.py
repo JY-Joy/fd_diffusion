@@ -27,13 +27,13 @@ def params_to_state_dict(target_params, model):
         state_dict[name] = target_params[i]
     return state_dict
 
-def run_loop(accelerator, model, gd, train_dataloader, optimizer, args, global_step=0, start_step=0, start_epoch=0, p_uncond=0.0, ddim_gd=None, latent_orthog=False, ema_rate=0.9999, dataset='clevr', downweight=False, image_size=64):
+def run_loop(accelerator, model, ema_model, gd, train_dataloader, optimizer, args, global_step=0, start_step=0, start_epoch=0, p_uncond=0.0, ddim_gd=None, latent_orthog=False, ema_rate=0.9999, dataset='clevr', downweight=False, image_size=64):
 
     # ddim sampling for generating samples per epoch block
     if ddim_gd == None:
         ddim_gd = create_ddim_diffusion(diffusion_defaults())
 
-    # ema_params = copy.deepcopy(list(model.parameters()))
+    ema_params = copy.deepcopy(list(model.parameters()))
     ema_model = EMA(
         accelerator.unwrap_model(model),
         beta=ema_rate,
@@ -107,7 +107,7 @@ def run_loop(accelerator, model, gd, train_dataloader, optimizer, args, global_s
                             accelerator.unwrap_model(model), ddim_gd, seed=args.seed,
                             sample_method='ddim', im_path=im_path, image_size=image_size,
                             device=accelerator.device, free=use_CFG, guidance_scale=10.0,
-                            separate=True,
+                            separate=False,
                         )
                         for tracker in accelerator.trackers:
                             if tracker.name == "tensorboard":

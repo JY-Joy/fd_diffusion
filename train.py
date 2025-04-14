@@ -6,6 +6,7 @@ import os
 import argparse
 import logging
 import json
+import safetensors
 
 import torch as th
 
@@ -97,6 +98,20 @@ def main():
 
     diffusion_kwargs = args_to_dict(args, diffusion_defaults().keys())
     gd = create_gaussian_diffusion(**diffusion_kwargs)
+
+    # load pre-trained weights
+    if args.ckpt_path is not None:
+        print(f'loading from {args.ckpt_path}')
+        # Load distilled weights
+        if args.ckpt_path.endswith('.safetensors'):
+            state_dict = dict()
+            with safetensors.safe_open(args.ckpt_path, framework="pt", device="cpu") as f:
+                for key in f.keys():
+                    state_dict[key] = f.get_tensor(key)
+        else:
+            state_dict = th.load(args.ckpt_path, map_location='cpu')
+
+        model.load_state_dict(state_dict)
 
     relevant_keys = list(training_model_defaults.keys()) +  list(diffusion_defaults().keys()) + list(training_defaults().keys())
     json.dump(args_to_dict(args, relevant_keys),
@@ -247,6 +262,7 @@ def create_argparser():
         ema_rate="0.9999",  # comma-separated list of EMA values
         log_interval=10,
         resume_from_checkpoint="latest",
+        ckpt_path=None,
         mixed_precision='no',
         fp16_scale_growth=1e-3,
     )
