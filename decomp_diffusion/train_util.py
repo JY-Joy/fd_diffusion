@@ -27,19 +27,20 @@ def params_to_state_dict(target_params, model):
         state_dict[name] = target_params[i]
     return state_dict
 
-def run_loop(accelerator, model, ema_model, gd, train_dataloader, optimizer, args, global_step=0, start_step=0, start_epoch=0, p_uncond=0.0, ddim_gd=None, latent_orthog=False, ema_rate=0.9999, dataset='clevr', downweight=False, image_size=64):
+def run_loop(accelerator, model, gd, train_dataloader, optimizer, args, global_step=0, start_step=0, start_epoch=0, p_uncond=0.0, ddim_gd=None, latent_orthog=False, ema_rate=0.9999, dataset='clevr', downweight=False, image_size=64):
 
     # ddim sampling for generating samples per epoch block
     if ddim_gd == None:
         ddim_gd = create_ddim_diffusion(diffusion_defaults())
 
-    ema_params = copy.deepcopy(list(model.parameters()))
+    # ema_params = copy.deepcopy(list(model.parameters()))
     ema_model = EMA(
         accelerator.unwrap_model(model),
         beta=ema_rate,
         update_every=1
     )
     ema_model.to(accelerator.device)
+    ema_model.copy_params_from_model_to_ema()
 
     progress_bar = tqdm(
         range(0, args.max_train_steps),

@@ -90,8 +90,8 @@ def gen_image_and_components(model, gd, seed=3467, separate=False, num_component
         model_kwargs=model_kwargs,
         cond_fn=None,
         num_components=num_components
-    )[-1]
-    all_samples.append(sample)
+    )
+    all_samples.extend(sample)
 
     return all_samples
 

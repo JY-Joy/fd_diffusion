@@ -127,9 +127,11 @@ if __name__=='__main__':
         masks = images[1]
         images = images[0]
     samples = th.cat(images, dim=0).cpu()
+    prefix="rec_"
     if args.separate:
         masks = th.cat(masks, dim=0).cpu()
         mask_grid = make_grid(masks, nrow=samples.shape[0], padding=0)
-        save_image(mask_grid, os.path.join(save_dir, f'{dataset}_mask_70k.png'))
+        save_image(mask_grid, os.path.join(save_dir, f'{dataset}_mask_80k.png'))
+        prefix="indv_"
     grid = make_grid(samples, nrow=samples.shape[0], padding=0)
-    save_image(grid, os.path.join(save_dir, f'{dataset}_70k.png'))
+    save_image(grid, os.path.join(save_dir, f'{dataset}_{prefix}80k.png'))

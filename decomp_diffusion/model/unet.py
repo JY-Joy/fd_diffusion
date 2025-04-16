@@ -240,6 +240,7 @@ class AttentionBlock(nn.Module):
         b, c, *spatial = x.shape
         qkv = self.qkv(self.norm(x).view(b, c, -1))
         if encoder_out is not None:
+            encoder_out = encoder_out.unsqueeze(-1)
             encoder_out = self.encoder_kv(encoder_out)
             h = self.attention(qkv, encoder_out)
         else:
@@ -377,12 +378,11 @@ class LatentEncoder(nn.Module):
 
         ch = ch + input_block_chans.pop()
         self.feat_head = nn.Sequential(
-            normalization(ch, swish=1.0),
-            nn.Identity(),
-            zero_module(conv_nd(dims, ch, out_dim*num_components, 3, padding=1)),
+            # normalization(ch, swish=1.0),
+            nn.Linear(image_size*image_size, out_dim),
         )
 
-        self.mask_head = nn.Sequential(
+        self.out = nn.Sequential(
             normalization(ch, swish=1.0),
             nn.Identity(),
             zero_module(conv_nd(dims, ch, num_components, 3, padding=1)),
@@ -411,12 +411,13 @@ class LatentEncoder(nn.Module):
         h = th.cat([h, hs.pop()], dim=1)
 
         # out
-        mask_logits = self.mask_head(h)
-        mask = F.softmax(mask_logits, dim=1)
+        h = self.out(h)
+
+        o = self.feat_head(h.view(b, self.num_components, s[2] * s[3]))
+
+        mask = F.softmax(h, dim=1)
 
         # TODO: filter out features from other components
-
-        o = self.feat_head(h)
 
         return o, mask
 
@@ -582,14 +583,14 @@ class UNetModel(nn.Module):
         self.image_size = image_size
         ch = input_ch = int(channel_mult[0] * model_channels)
 
-        self.latent_dim = input_ch // 2
+        self.latent_dim = encoder_channels
 
         print(f'emb_dim: {emb_dim}')
         print(f'time_embed_dim: {time_embed_dim}')
         print(f'latent_dim_expand: {self.latent_dim} x {self.num_components}')
         assert emb_dim == time_embed_dim
 
-        self.conv_in = TimestepEmbedSequential(conv_nd(dims, in_channels, ch//2, 3, padding=1))
+        self.conv_in = TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=1))
         self.input_blocks = nn.ModuleList([])
         self._feature_size = ch
         input_block_chans = [ch]
@@ -742,19 +743,19 @@ class UNetModel(nn.Module):
 
 
     def forward(self, x, t, x_start=None, latent=None, latent_index=None, return_component=False):
-        
+
         # Segmentation model forward
+        bs = x.shape[0]
         if x_start != None:
             latent, mask = self.encode_latent(x_start)
         else:
             assert isinstance(latent, tuple)
             latent, mask = latent
-        comp_latent = latent.chunk(self.num_components, dim=1)
         if latent_index is not None:
-            comp_latent = comp_latent[latent_index]
+            comp_latent = latent[latent_index]
             mask = mask[:, latent_index:latent_index+1]
         else:
-            comp_latent = th.cat(comp_latent, dim=0)
+            comp_latent = latent.reshape(bs * self.num_components, -1)
 
         batch_size = x.shape[0]
 
@@ -764,37 +765,39 @@ class UNetModel(nn.Module):
         # selected_latent = latent[th.arange(x.shape[0]), latent_index]
         # selected_mask = mask[th.arange(x.shape[0]), latent_index].unsqueeze(1)
 
-        # diffusion UNet forward
         emb = self.time_embed(timestep_embedding(t, self.model_channels))
         if latent_index is None and not return_component:
-            x = th.cat([x]*self.num_components, dim=0)
-            emb = th.cat([emb]*self.num_components, dim=0)
+            # training mode
+            x = th.repeat_interleave(x, self.num_components, dim=0)
+            emb = th.repeat_interleave(emb, self.num_components, dim=0)
 
+        # diffusion UNet forward
         hs = []
         h = self.conv_in(x.type(self.dtype), emb)
         # concat
-        h = th.cat((h, comp_latent), dim=1)
         hs.append(h)
-
         for module in self.input_blocks:
-            h = module(h, emb)
+            h = module(h, emb, comp_latent)
             hs.append(h)
-        h = self.middle_block(h, emb)
+        h = self.middle_block(h, emb, comp_latent)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
-            h = module(h, emb)
+            h = module(h, emb, comp_latent)
+        h = self.out(h)
 
         # ensemble component by mask
-        h = self.out(h)
         if latent_index is not None:
             h = h * mask
             h = h.type(x.dtype)
             return h, mask
         if return_component:
-            mask = mask.reshape(self.num_components, -1, h.shape[2], h.shape[3])
+            # mask = th.cat([mask[:, 3:4]] * self.num_components, dim=0)
+            mask = mask.reshape(-1, h.shape[2], h.shape[3])
             h = (h * mask).to(dtype=x.dtype)
+            # h = h.sum(dim=0, keepdim=True)
+            # h = th.cat([h]*self.num_components, dim=0)
             return h, mask
-        h = h.reshape(batch_size, self.num_components, -1, h.shape[2], h.shape[3])
+        h = h.reshape(-1, self.num_components, *h.shape[-3:])
         o = (h * mask.unsqueeze(2)).sum(dim=1)
         o = o.to(dtype=x.dtype)
 
