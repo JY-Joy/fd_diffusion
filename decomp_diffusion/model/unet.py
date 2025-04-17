@@ -758,8 +758,7 @@ class UNetModel(nn.Module):
             comp_latent = latent.reshape(self.num_components, -1)
         else:
             comp_latent = latent.reshape(bs * self.num_components, -1)
-
-        batch_size = x.shape[0]
+            # comp_latent = latent.reshape(-1, self.latent_dim) or torch.flatten
 
         # select latent
         # if latent_index is None:
@@ -794,12 +793,12 @@ class UNetModel(nn.Module):
             return h, mask
         if return_component:
             # mask = th.cat([mask[:, 3:4]] * self.num_components, dim=0)
-            mask = mask.view(self.num_components, -1, h.shape[2], h.shape[3])
+            mask = mask.view(self.num_components, 1, h.shape[2], h.shape[3])
             h = (h * mask).to(dtype=x.dtype)
             # h = h.sum(dim=0, keepdim=True)
             # h = th.cat([h]*self.num_components, dim=0)
             return h, mask
-        h = h.reshape(-1, self.num_components, *h.shape[-3:])
+        h = h.reshape(bs, self.num_components, *h.shape[-3:])
         o = (h * mask.unsqueeze(2)).sum(dim=1)
         o = o.to(dtype=x.dtype)
 
