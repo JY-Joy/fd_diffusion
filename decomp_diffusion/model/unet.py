@@ -571,7 +571,6 @@ class UNetModel(nn.Module):
 
         self.emb_dim = emb_dim
         self.time_embed_dim = time_embed_dim        # hard coded
-        self.time_embed_dim = time_embed_dim
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
             nn.SiLU(),
@@ -583,12 +582,11 @@ class UNetModel(nn.Module):
         self.image_size = image_size
         ch = input_ch = int(channel_mult[0] * model_channels)
 
-        self.latent_dim = encoder_channels
+        self.latent_dim = emb_dim - time_embed_dim
 
         print(f'emb_dim: {emb_dim}')
         print(f'time_embed_dim: {time_embed_dim}')
         print(f'latent_dim_expand: {self.latent_dim} x {self.num_components}')
-        assert emb_dim == time_embed_dim
 
         self.conv_in = TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=1))
         self.input_blocks = nn.ModuleList([])
@@ -754,11 +752,8 @@ class UNetModel(nn.Module):
         if latent_index is not None:
             comp_latent = latent[latent_index]
             mask = mask[:, latent_index:latent_index+1]
-        elif return_component:
-            comp_latent = latent.reshape(self.num_components, -1)
         else:
-            comp_latent = latent.reshape(bs * self.num_components, -1)
-            # comp_latent = latent.reshape(-1, self.latent_dim) or torch.flatten
+            comp_latent = latent.reshape(-1, self.latent_dim)
 
         # select latent
         # if latent_index is None:
@@ -771,6 +766,7 @@ class UNetModel(nn.Module):
             # training mode
             x = th.repeat_interleave(x, self.num_components, dim=0)
             emb = th.repeat_interleave(emb, self.num_components, dim=0)
+        emb = th.cat([emb, comp_latent], dim=1)
 
         # diffusion UNet forward
         hs = []
@@ -778,12 +774,12 @@ class UNetModel(nn.Module):
         # concat
         hs.append(h)
         for module in self.input_blocks:
-            h = module(h, emb, comp_latent)
+            h = module(h, emb)
             hs.append(h)
-        h = self.middle_block(h, emb, comp_latent)
+        h = self.middle_block(h, emb)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
-            h = module(h, emb, comp_latent)
+            h = module(h, emb)
         h = self.out(h)
 
         # ensemble component by mask
