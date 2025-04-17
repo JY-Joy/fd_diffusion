@@ -110,10 +110,20 @@ def run_loop(accelerator, model, gd, train_dataloader, optimizer, args, global_s
                             device=accelerator.device, free=use_CFG, guidance_scale=10.0,
                             separate=False,
                         )
+                        comps, masks = get_gen_images(
+                            accelerator.unwrap_model(model), ddim_gd, seed=args.seed,
+                            sample_method='ddim', im_path=im_path, image_size=image_size,
+                            device=accelerator.device, free=use_CFG, guidance_scale=10.0,
+                            separate=True,
+                        )
                         for tracker in accelerator.trackers:
                             if tracker.name == "tensorboard":
                                 np_images = th.cat(images, dim=0).clip(-1,1).cpu().numpy()
-                                tracker.writer.add_images("validation", np_images, global_step, dataformats="NCHW")
+                                tracker.writer.add_images("val_images", np_images, global_step, dataformats="NCHW")
+                                np_comps = th.cat(comps, dim=0).clip(-1,1).cpu().numpy()
+                                tracker.writer.add_images("val_component", np_comps, global_step, dataformats="NCHW")
+                                np_masks = th.cat(masks, dim=0).clip(-1,1).cpu().numpy()
+                                tracker.writer.add_images("val_mask", np_masks, global_step, dataformats="NCHW")
 
             logs = {"loss": loss.detach().item()}
             progress_bar.set_postfix(**logs)

@@ -66,7 +66,7 @@ def main():
         trial_desc += '_' + args.extra_desc
     args.output_dir = os.path.join(args.output_dir, trial_desc)
 
-    logging_dir = os.path.join(args.output_dir, args.logging_dir)
+    logging_dir = os.path.join(args.logging_dir)
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
