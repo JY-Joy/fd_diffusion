@@ -237,6 +237,7 @@ class AttentionBlock(nn.Module):
         self.proj_out = zero_module(conv_nd(1, channels, channels, 1))
 
     def forward(self, x, encoder_out=None):
+        assert encoder_out is None
         b, c, *spatial = x.shape
         qkv = self.qkv(self.norm(x).view(b, c, -1))
         if encoder_out is not None:
@@ -378,11 +379,13 @@ class LatentEncoder(nn.Module):
 
         ch = ch + input_block_chans.pop()
         self.feat_head = nn.Sequential(
-            # normalization(ch, swish=1.0),
-            nn.Linear(image_size*image_size, out_dim),
+            normalization(ch, swish=1.0),
+            nn.Identity(),
+            zero_module(conv_nd(dims, ch, out_dim, 3, padding=1)),
+            # nn.Linear(image_size*image_size, out_dim),
         )
 
-        self.out = nn.Sequential(
+        self.seg_head = nn.Sequential(
             normalization(ch, swish=1.0),
             nn.Identity(),
             zero_module(conv_nd(dims, ch, num_components, 3, padding=1)),
@@ -410,14 +413,15 @@ class LatentEncoder(nn.Module):
             h = module(h)
         h = th.cat([h, hs.pop()], dim=1)
 
-        # out
-        h = self.out(h)
+        # mask
+        mask_logits = self.seg_head(h)
+        mask = F.softmax(mask_logits, dim=1)
 
-        o = self.feat_head(h.view(b, self.num_components, s[2] * s[3]))
-
-        mask = F.softmax(h, dim=1)
-
-        # TODO: filter out features from other components
+        # filter out features from other components
+        feat = self.feat_head(h)
+        o = th.einsum('bnhw,bchw->bnc', mask, feat)
+        feat_weight = mask.sum(dim=(2, 3)).unsqueeze(2)
+        o = o / (feat_weight + 1e-8)
 
         return o, mask
 
@@ -795,7 +799,7 @@ class UNetModel(nn.Module):
             # h = th.cat([h]*self.num_components, dim=0)
             return h, mask
         h = h.reshape(bs, self.num_components, *h.shape[-3:])
-        o = (h * mask.unsqueeze(2)).sum(dim=1)
+        o = h.mean(dim=1)
         o = o.to(dtype=x.dtype)
 
         return o
