@@ -586,11 +586,16 @@ class UNetModel(nn.Module):
         self.image_size = image_size
         ch = input_ch = int(channel_mult[0] * model_channels)
 
-        self.latent_dim = emb_dim - time_embed_dim
+        encoder_channels = int(encoder_channels)
+        if encoder_channels is not None:
+            assert emb_dim - time_embed_dim == 0
+            self.latent_dim = encoder_channels
+        else:
+            self.latent_dim = emb_dim - time_embed_dim 
 
         print(f'emb_dim: {emb_dim}')
         print(f'time_embed_dim: {time_embed_dim}')
-        print(f'latent_dim_expand: {self.latent_dim} x {self.num_components}')
+        print(f"encoder_channels: {encoder_channels}")
 
         self.conv_in = TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=1))
         self.input_blocks = nn.ModuleList([])

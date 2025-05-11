@@ -37,7 +37,7 @@ if __name__=='__main__':
     parser.add_argument('--free', action='store_true')
     parser.add_argument('--guidance_scale', type=float, default=10.0)
     parser.add_argument('--im_path', default='clevr_im_10.png')
-    parser.add_argument('--im_path2', default=None, help="for combination")
+    parser.add_argument('--im_path_2', default=None, help="for combination")
 
     parser.add_argument('--dataset', default='clevr')
     parser.add_argument('--dataset2', default=None) # for multi-modal combination
@@ -69,7 +69,10 @@ if __name__=='__main__':
     image_size = args.image_size
     sample_method = args.sample_method
     num_images = args.num_images
-    indices = args.indices
+    indices = indices = args.indices
+    if args.indices is not None:
+        indices = args.indices.split(',')
+        indices = [int(id) for id in indices]
     data_dir = args.data_dir
 
     model_desc = args.model_desc
@@ -118,14 +121,16 @@ if __name__=='__main__':
 
     images = get_gen_images(
         model, gd, seed=args.seed,
-        sample_method=sample_method, im_path=args.im_path, image_size=image_size,
+        sample_method=sample_method, im_path=args.im_path, im_path_2=args.im_path_2, image_size=image_size,
         device=device, guidance_scale=guidance_scale, free=free,
-        separate=args.separate,
+        separate=args.separate, latent_index = indices
     )
 
     if args.separate:
         masks = images[1]
         images = images[0]
+    else:
+        images = [images[-1]]
     samples = th.cat(images, dim=0).cpu()
     prefix="rec_"
     if args.separate:
@@ -135,3 +140,4 @@ if __name__=='__main__':
         prefix="indv_"
     grid = make_grid(samples, nrow=samples.shape[0], padding=0)
     save_image(grid, os.path.join(save_dir, f'{dataset}_{prefix}80k.png'))
+    print('saved in', os.path.join(save_dir, f'{dataset}_{prefix}80k.png'))
