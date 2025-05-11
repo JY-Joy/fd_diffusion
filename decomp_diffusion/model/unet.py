@@ -378,11 +378,13 @@ class LatentEncoder(nn.Module):
 
         ch = ch + input_block_chans.pop()
         self.feat_head = nn.Sequential(
-            # normalization(ch, swish=1.0),
-            nn.Linear(image_size*image_size, out_dim),
+            normalization(ch, swish=1.0),
+            nn.Identity(),
+            zero_module(conv_nd(dims, ch, out_dim, 3, padding=1)),
+            # nn.Linear(image_size*image_size, out_dim),
         )
 
-        self.out = nn.Sequential(
+        self.seg_head = nn.Sequential(
             normalization(ch, swish=1.0),
             nn.Identity(),
             zero_module(conv_nd(dims, ch, num_components, 3, padding=1)),
@@ -410,14 +412,15 @@ class LatentEncoder(nn.Module):
             h = module(h)
         h = th.cat([h, hs.pop()], dim=1)
 
-        # out
-        h = self.out(h)
+        # mask
+        mask_logits = self.seg_head(h)
+        mask = F.softmax(mask_logits, dim=1)
 
-        o = self.feat_head(h.view(b, self.num_components, s[2] * s[3]))
-
-        mask = F.softmax(h, dim=1)
-
-        # TODO: filter out features from other components
+        # filter out features from other components
+        feat = self.feat_head(h)
+        o = th.einsum('bnhw,bchw->bnc', mask, feat)
+        feat_weight = mask.sum(dim=(2, 3)).unsqueeze(2)
+        o = o / (feat_weight + 1e-8)
 
         return o, mask
 
@@ -571,7 +574,6 @@ class UNetModel(nn.Module):
 
         self.emb_dim = emb_dim
         self.time_embed_dim = time_embed_dim        # hard coded
-        self.time_embed_dim = time_embed_dim
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
             nn.SiLU(),
@@ -583,12 +585,16 @@ class UNetModel(nn.Module):
         self.image_size = image_size
         ch = input_ch = int(channel_mult[0] * model_channels)
 
-        self.latent_dim = encoder_channels
+        encoder_channels = int(encoder_channels)
+        if encoder_channels is not None:
+            assert emb_dim - time_embed_dim == 0
+            self.latent_dim = encoder_channels
+        else:
+            self.latent_dim = emb_dim - time_embed_dim 
 
         print(f'emb_dim: {emb_dim}')
         print(f'time_embed_dim: {time_embed_dim}')
-        print(f'latent_dim_expand: {self.latent_dim} x {self.num_components}')
-        assert emb_dim == time_embed_dim
+        print(f"encoder_channels: {encoder_channels}")
 
         self.conv_in = TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=1))
         self.input_blocks = nn.ModuleList([])
@@ -754,11 +760,8 @@ class UNetModel(nn.Module):
         if latent_index is not None:
             comp_latent = latent[latent_index]
             mask = mask[:, latent_index:latent_index+1]
-        elif return_component:
-            comp_latent = latent.reshape(self.num_components, -1)
         else:
-            comp_latent = latent.reshape(bs * self.num_components, -1)
-            # comp_latent = latent.reshape(-1, self.latent_dim) or torch.flatten
+            comp_latent = latent.reshape(-1, self.latent_dim)
 
         # select latent
         # if latent_index is None:
@@ -799,7 +802,8 @@ class UNetModel(nn.Module):
             # h = th.cat([h]*self.num_components, dim=0)
             return h, mask
         h = h.reshape(bs, self.num_components, *h.shape[-3:])
-        o = (h * mask.unsqueeze(2)).sum(dim=1)
+        # o = (h * mask.unsqueeze(2)).sum(dim=1)
+        o = h.mean(dim=1)
         o = o.to(dtype=x.dtype)
 
         return o

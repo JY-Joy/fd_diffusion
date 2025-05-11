@@ -208,14 +208,21 @@ def get_model_fn(model, gd, batch_size=1, guidance_scale=10.0, device='cuda'):
     return model_fn
 
 
-def get_gen_images(model, gd, seed=3467, sample_method='ddim', im_path='clevr_im_10.png', latent=None, batch_size=1, image_size=64, device='cuda', model_kwargs=None, free=False, guidance_scale=10.0, separate=False):
+def get_gen_images(model, gd, seed=3467, sample_method='ddim', im_path='clevr_im_10.png', im_path_2 = None, latent=None, batch_size=1, image_size=64, device='cuda', model_kwargs=None, free=False, guidance_scale=10.0, separate=False, latent_index=0):
     orig_im = get_im(im_path=im_path, resolution=image_size)
     if latent == None:
         latent = model.encode_latent(orig_im)
-        if model_kwargs == None:
-            model_kwargs = {'latent': latent}
-        else:
-            model_kwargs['latent'] = latent
+
+    if im_path_2 is not None:
+        orig_im_2 = get_im(im_path=im_path_2, resolution=image_size)
+        latent2 = model.encode_latent(orig_im_2)
+        latent[0][:, latent_index] = latent2[0][:, latent_index]
+        # latent[1][:, latent_index] = latent2[1][:, latent_index]
+
+    if model_kwargs == None:
+        model_kwargs = {'latent': latent}
+    else:
+        model_kwargs['latent'] = latent
 
     if device == None:
         device = model.device
