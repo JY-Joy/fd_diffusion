@@ -79,7 +79,6 @@ def gen_image_and_components(model, gd, seed=3467, separate=False, num_component
         return all_samples, mask_samples
 
     # reconstruction
-    model_kwargs['latent_index'] = None
     set_seed(seed)
     sample = sample_loop_func(
         model,

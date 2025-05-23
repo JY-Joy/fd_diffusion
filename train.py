@@ -59,9 +59,8 @@ def main():
 
     predict_type = 'xstart' if predict_mean else 'eps'
     trial_desc = f'{dataset}_{predict_type}_emb_{args.emb_dim}_comp_{args.num_components}'
-    p_uncond = args.p_uncond
-    if p_uncond > 0:
-        trial_desc += '_CFG'
+    if args.p_uncond > 0:
+        trial_desc += f'_CFG{args.p_uncond}'
     if len(args.extra_desc) > 0:
         trial_desc += '_' + args.extra_desc
     args.output_dir = os.path.join(args.output_dir, trial_desc)
@@ -92,7 +91,7 @@ def main():
 
     # create model
     logger.info("creating model and diffusion...")
-    training_model_defaults = unet_model_defaults() if model_desc == 'unet_model' else model_defaults()
+    training_model_defaults = unet_model_defaults()
     model_kwargs = args_to_dict(args, training_model_defaults.keys())
     model = create_diffusion_model(**model_kwargs)
 
@@ -113,9 +112,9 @@ def main():
 
         model.load_state_dict(state_dict)
 
-    relevant_keys = list(training_model_defaults.keys()) +  list(diffusion_defaults().keys()) + list(training_defaults().keys())
-    json.dump(args_to_dict(args, relevant_keys),
-        open(os.path.join(args.output_dir, 'arguments.json'), "w"), sort_keys=True, indent=4)
+    relevant_keys = list(model_defaults().keys()) +  list(training_defaults().keys())
+    key_args = args_to_dict(args, relevant_keys)
+    json.dump(key_args, open(os.path.join(args.output_dir, 'arguments.json'), "w"), sort_keys=True, indent=4)
 
     # optimizer
     optimizer = th.optim.Adam(
@@ -163,7 +162,7 @@ def main():
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
-        accelerator.init_trackers("training_exp", config=vars(args))
+        accelerator.init_trackers("decomp_diff", config=key_args)
 
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -207,10 +206,12 @@ def main():
         initial_global_step = 0
 
     run_loop(
-        accelerator, model, gd, train_dataloader, optimizer, args,
+        accelerator, args,
+        model, gd, train_dataloader, optimizer,
         global_step=global_step, start_step=initial_global_step, start_epoch=first_epoch,
-        p_uncond=p_uncond, latent_orthog=args.latent_orthog,
-        dataset=dataset, downweight=downweight, image_size=image_size
+        dataset=dataset, image_size=image_size,
+        p_uncond=args.p_uncond, regu_weight=args.regu_weight,
+        latent_orthog=args.latent_orthog, downweight=downweight,
     )
 
 def parse_epoch(ckpt_path):
@@ -227,22 +228,19 @@ def parse_epoch(ckpt_path):
 def training_defaults():
     # directory configs
     return dict(
-        output_dir="output",
-        dataset="clevr",
-        dataloader_num_workers=8,
-        report_to="tensorboard",
-        logging_dir="logs",
-        num_images=None,
         p_uncond=0.0,
-        latent_orthog=False,
-        extra_desc='',
-        downweight=False,
+        regu_weight=0.0,
     )
 
 def create_argparser():
     # Regular hyperparameters
-    defaults = dict(
+    base_args = dict(
         data_dir="",
+        dataset="clevr",
+        dataloader_num_workers=8,
+        output_dir="output",
+        report_to="wandb",
+        logging_dir="logs",
         schedule_sampler="uniform",
         seed=3467,
         lr=1e-4,
@@ -254,24 +252,24 @@ def create_argparser():
         num_train_epochs=110,
         max_train_steps=40000,
         checkpointing_steps=10000,
-        validation_steps=1000,
-        weight_decay=0.0,
+        validation_steps=500,
         lr_anneal_steps=0,
         train_batch_size=1,
-        microbatch=-1,  # -1 disables microbatches
         ema_rate="0.9999",  # comma-separated list of EMA values
-        log_interval=10,
         resume_from_checkpoint="latest",
         ckpt_path=None,
+        num_images=None,
+        downweight=False,
         mixed_precision='no',
-        fp16_scale_growth=1e-3,
+        latent_orthog=False,
+        extra_desc='',
     )
-    defaults.update(training_defaults())
+    base_args.update(training_defaults())
+    base_args.update(diffusion_defaults())
+    base_args.update(unet_model_defaults())
 
-    defaults.update(diffusion_defaults())
-    defaults.update(unet_model_defaults())
     parser = argparse.ArgumentParser()
-    add_dict_to_argparser(parser, defaults)
+    add_dict_to_argparser(parser, base_args)
     return parser
 
 

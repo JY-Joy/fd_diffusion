@@ -162,8 +162,10 @@ cython_debug/
 
 # cluster scripts
 test_config.json
-start.sh
 
 # images
 val_imgs/
 sample_images/
+
+# logs
+wandb/

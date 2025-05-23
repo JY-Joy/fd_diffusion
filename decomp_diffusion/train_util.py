@@ -4,6 +4,7 @@ import accelerate
 import os
 import numpy as np
 import copy
+import wandb
 from ema_pytorch import EMA
 from tqdm.auto import tqdm
 
@@ -27,7 +28,14 @@ def params_to_state_dict(target_params, model):
         state_dict[name] = target_params[i]
     return state_dict
 
-def run_loop(accelerator, model, gd, train_dataloader, optimizer, args, global_step=0, start_step=0, start_epoch=0, p_uncond=0.0, ddim_gd=None, latent_orthog=False, ema_rate=0.9999, dataset='clevr', downweight=False, image_size=64):
+def run_loop(
+        accelerator, args,
+        model, gd, train_dataloader, optimizer,
+        global_step=0, start_step=0, start_epoch=0,
+        p_uncond=0.0, ema_rate=0.9999, regu_weight=0.0,
+        dataset='clevr', image_size=64,
+        ddim_gd=None, latent_orthog=False, downweight=False,
+    ):
 
     # ddim sampling for generating samples per epoch block
     if ddim_gd == None:
@@ -50,7 +58,6 @@ def run_loop(accelerator, model, gd, train_dataloader, optimizer, args, global_s
         disable=not accelerator.is_local_main_process,
     )
 
-    use_CFG = p_uncond > 0
     for epoch in range(start_epoch, args.num_train_epochs):
         model.train()
         for step, (batch, cond) in enumerate(train_dataloader):
@@ -58,25 +65,12 @@ def run_loop(accelerator, model, gd, train_dataloader, optimizer, args, global_s
                 batch = batch.to(accelerator.device)
                 model_kwargs = {}
 
-                if not use_CFG:
-                    model_kwargs = dict(latent=None, x_start=batch)
-                else:
-                    # Condition dropout
-                    b = batch.shape[0]
-                    rand_values = th.rand(b, 1).to(accelerator.device)
-                    keep_mask = rand_values >= p_uncond
-                    null_emb = th.zeros(b, model.latent_dim_expand).to(accelerator.device)
-                    latent_emb = model.encode_latent(batch)
-                    emb = th.where(
-                        keep_mask,
-                        latent_emb,
-                        null_emb
-                    )
-                    model_kwargs = dict(latent=emb)
+                model_kwargs = dict(latent=None, x_start=batch, p_uncond=p_uncond)
 
                 t = uniform_sample_timesteps(gd.num_timesteps, len(batch)).to(accelerator.device)
 
-                loss = gd.training_losses(model, batch, t, model_kwargs=model_kwargs, latent_orthog=latent_orthog, downweight=downweight)
+                diff_loss, regu, seg_map = gd.training_losses(model, batch, t, model_kwargs=model_kwargs, latent_orthog=latent_orthog, downweight=downweight)
+                loss = diff_loss + regu_weight * regu
                 loss = loss.mean() 
                 accelerator.backward(loss)
 
@@ -107,13 +101,13 @@ def run_loop(accelerator, model, gd, train_dataloader, optimizer, args, global_s
                         images = get_gen_images(
                             accelerator.unwrap_model(model), ddim_gd, seed=args.seed,
                             sample_method='ddim', im_path=im_path, image_size=image_size,
-                            device=accelerator.device, free=use_CFG, guidance_scale=10.0,
+                            device=accelerator.device, free=False, guidance_scale=10.0,
                             separate=False,
                         )
                         comps, masks = get_gen_images(
                             accelerator.unwrap_model(model), ddim_gd, seed=args.seed,
                             sample_method='ddim', im_path=im_path, image_size=image_size,
-                            device=accelerator.device, free=use_CFG, guidance_scale=10.0,
+                            device=accelerator.device, free=False, guidance_scale=10.0,
                             separate=True,
                         )
                         for tracker in accelerator.trackers:
@@ -124,8 +118,34 @@ def run_loop(accelerator, model, gd, train_dataloader, optimizer, args, global_s
                                 tracker.writer.add_images("val_component", np_comps, global_step, dataformats="NCHW")
                                 np_masks = th.cat(masks, dim=0).clip(-1,1).cpu().numpy()
                                 tracker.writer.add_images("val_mask", np_masks, global_step, dataformats="NCHW")
+                            if tracker.name == "wandb":
+                                tracker.log(
+                                    {
+                                        "recon": [
+                                            wandb.Image(
+                                                image.cpu().numpy().squeeze(0).transpose(1, 2, 0),
+                                                caption = f"recon {i}"
+                                            ) for i, image in enumerate(images)
+                                        ],
+                                        "latents": [
+                                            wandb.Image(
+                                                image.cpu().numpy().squeeze(0).transpose(1, 2, 0),
+                                                caption = f"latent {i}"
+                                            ) for i, image in enumerate(comps)
+                                        ],
+                                        "masks": [
+                                            wandb.Image(
+                                                image.cpu().numpy().squeeze(0).transpose(1, 2, 0),
+                                                caption = f"mask {i}"
+                                            ) for i, image in enumerate(masks)
+                                        ],
+                                    }
+                                )
 
-            logs = {"loss": loss.detach().item()}
+            latents_score = seg_map.detach().mean(dim=(0,2,3))
+            logs = {"loss": loss.detach().item(), "regu": regu.detach().mean().item()}
+            for i, latent_score in enumerate(latents_score):
+                logs[f"latent_{i}"] = latent_score.item()
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 
@@ -137,36 +157,36 @@ def run_loop(accelerator, model, gd, train_dataloader, optimizer, args, global_s
     accelerator.end_training()
 
 
-def create_ema(save_desc, epoch_block=10000, last_epoch=140000):
-    save_dir = 'logs_' + save_desc
-    defaults = model_defaults()
+# def create_ema(save_desc, epoch_block=10000, last_epoch=140000):
+#     save_dir = 'logs_' + save_desc
+#     defaults = model_defaults()
 
-    parser = argparse.ArgumentParser()
-    add_dict_to_argparser(parser, defaults)
-    parser.add_argument('--ema_rate', type=float, default=0.99)
-    args = parser.parse_args()
+#     parser = argparse.ArgumentParser()
+#     add_dict_to_argparser(parser, defaults)
+#     parser.add_argument('--ema_rate', type=float, default=0.99)
+#     args = parser.parse_args()
 
-    ema_rate = args.ema_rate
-    model_kwargs = args_to_dict(args, model_defaults().keys())
-    model = create_diffusion_model(**model_kwargs)
-    model.eval()
-    device = 'cuda'
-    model.to(device)
-    ema_params = 0
+#     ema_rate = args.ema_rate
+#     model_kwargs = args_to_dict(args, model_defaults().keys())
+#     model = create_diffusion_model(**model_kwargs)
+#     model.eval()
+#     device = 'cuda'
+#     model.to(device)
+#     ema_params = 0
 
-    for epoch in range(0, last_epoch + 1, epoch_block):
-        ckpt_path = os.path.join(save_dir, f'model_{epoch}.pt')
-        print(f'loading from {ckpt_path}')
-        checkpoint = th.load(ckpt_path, map_location='cpu')
-        model.load_state_dict(checkpoint)
-        if epoch == 0:
-            ema_params = copy.deepcopy(list(model.parameters()))
-        update_ema(ema_params, list(model.parameters()), ema_rate=ema_rate)
-        print(epoch)
+#     for epoch in range(0, last_epoch + 1, epoch_block):
+#         ckpt_path = os.path.join(save_dir, f'model_{epoch}.pt')
+#         print(f'loading from {ckpt_path}')
+#         checkpoint = th.load(ckpt_path, map_location='cpu')
+#         model.load_state_dict(checkpoint)
+#         if epoch == 0:
+#             ema_params = copy.deepcopy(list(model.parameters()))
+#         update_ema(ema_params, list(model.parameters()), ema_rate=ema_rate)
+#         print(epoch)
 
-        ema_state_dict = params_to_state_dict(ema_params, model)
-        th.save(ema_state_dict, os.path.join(save_dir, f'ema_{ema_rate}_{epoch}.pt'))
+#         ema_state_dict = params_to_state_dict(ema_params, model)
+#         th.save(ema_state_dict, os.path.join(save_dir, f'ema_{ema_rate}_{epoch}.pt'))
 
-if __name__=='__main__':
-    save_desc = 'unet_model_celebahq_10000_xstart_emb_128'
-    create_ema(save_desc)
+# if __name__=='__main__':
+#     save_desc = 'unet_model_celebahq_10000_xstart_emb_128'
+#     create_ema(save_desc)

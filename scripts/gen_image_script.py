@@ -76,7 +76,7 @@ if __name__=='__main__':
     data_dir = args.data_dir
 
     model_desc = args.model_desc
-    training_model_defaults = unet_model_defaults() if model_desc == 'unet_model' else model_defaults()
+    training_model_defaults = unet_model_defaults()
     model_kwargs = args_to_dict(args, training_model_defaults.keys())
     model = create_diffusion_model(**model_kwargs)
     if 'ema' in ckpt_path:

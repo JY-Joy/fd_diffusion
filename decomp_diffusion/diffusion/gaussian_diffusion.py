@@ -153,7 +153,11 @@ class GaussianDiffusion:
             noise = th.randn_like(x_start)
         x_t = self.q_sample(x_start, t, noise=noise)
 
-        model_output = model(x_t, t, **model_kwargs) # no rescale timesteps
+        model_output = model(x_t, t, **model_kwargs, return_mask=True) # no rescale timesteps
+
+        if isinstance(model_output, tuple):
+            model_output, mask = model_output
+            mask_entropy = mean_flat((mask * mask.log()).sum(1))
 
         if self.predict_xstart:
             target = x_start
@@ -178,7 +182,7 @@ class GaussianDiffusion:
             penalty = mean_flat(prods - id_mat) # b x 1
 
             mse += penalty * 1 # factor
-        return mse
+        return mse, mask_entropy, mask
 
 
 

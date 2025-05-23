@@ -121,13 +121,14 @@ def create_ddim_diffusion(diffusion_kwargs, desired_timesteps=50):
     return ddim_gd
 
 def model_defaults():
+    # overwrote by unet_model_defaults
     return dict(
-        in_channels=3,                  # overwrote by unet_model_defaults
-        filter_dim=16,                  # deprecated
-        emb_dim=256,                    # overwrote by unet_model_defaults
-        num_components=4,               # overwrote by unet_model_defaults
-        model_desc='Segment_diffusion', # overwrote by unet_model_defaults
-        image_size=64 # added           # overwrote by unet_model_defaults
+        emb_dim=256,
+        time_embed_dim=64,
+        num_components=4,
+        image_size=64,
+        enc_channels=64,
+        encoder_channels=128,
     )
 
 def diffusion_defaults():

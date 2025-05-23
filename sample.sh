@@ -1,12 +1,17 @@
+source activate decomp_diff
+
 python3 scripts/gen_image_script.py \
-  --ckpt_path /apdcephfs/default121254/apdcephfs_cq10/share_916081/jentsehuang/decomp_diffusion/celebahq/unet_model_celebahq_None_xstart_emb_256_implementation_2_128x4latent_batch12x8/checkpoint-40000/model.safetensors \
+  --ckpt_path /home/jhuan236/scr4_mdredze1/jhuan236/logs/decomp_diffusion/cross_attn/celebahq_xstart_emb_256_comp_4_CFG_latent_dropout/checkpoint-80000/model.safetensors \
   --save_dir ./sample_images/ \
-  --image_size 128 \
-  --im_path2 ./val_imgs/celebahq_0.jpg \
-  --im_path ./val_imgs/celebahq_7.jpg \
+  --image_size 64 \
+  --im_path ./val_imgs/celebahq_0.jpg \
+  --im_path_2 ./val_imgs/celebahq_1.jpg \
   --dataset celebahq \
   --num_components 4 \
+  --enc_channels 64 \
   --emb_dim 256 \
-  --separate \
+  --time_embed_dim 256 \
+  --encoder_channels 128 \
   --seed 42 \
-  --combine_method add
+  --indices "0,1,3"
+  --separate

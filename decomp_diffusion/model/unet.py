@@ -748,7 +748,7 @@ class UNetModel(nn.Module):
         return self.latent_encoder(x)
 
 
-    def forward(self, x, t, x_start=None, latent=None, latent_index=None, return_component=False):
+    def forward(self, x, t, x_start=None, latent=None, p_uncond=0, return_component=False, return_mask=False):
 
         # Segmentation model forward
         bs = x.shape[0]
@@ -757,20 +757,23 @@ class UNetModel(nn.Module):
         else:
             assert isinstance(latent, tuple)
             latent, mask = latent
-        if latent_index is not None:
-            comp_latent = latent[latent_index]
-            mask = mask[:, latent_index:latent_index+1]
-        else:
-            comp_latent = latent.reshape(-1, self.latent_dim)
 
-        # select latent
-        # if latent_index is None:
-        #     latent_index = th.randint(0, self.num_components, (x.shape[0],), device=x.device)
-        # selected_latent = latent[th.arange(x.shape[0]), latent_index]
-        # selected_mask = mask[th.arange(x.shape[0]), latent_index].unsqueeze(1)
+        # latent dropout
+        # keep_mask = rand_values >= p_uncond
+        null_emb = th.zeros_like(latent)
+        # emb = th.where(
+        #     keep_mask,
+        #     latent_emb,
+        #     null_emb
+        # )
+
+        if th.rand(1) < p_uncond:
+            drop_index = th.randint(0, self.num_components, (bs,), device=x.device)
+            latent[th.arange(x.shape[0]), drop_index] = null_emb[th.arange(x.shape[0]), drop_index]
+        comp_latent = latent.reshape(-1, self.latent_dim)
 
         emb = self.time_embed(timestep_embedding(t, self.model_channels))
-        if latent_index is None and not return_component:
+        if not return_component:
             # training mode
             x = th.repeat_interleave(x, self.num_components, dim=0)
             emb = th.repeat_interleave(emb, self.num_components, dim=0)
@@ -789,12 +792,8 @@ class UNetModel(nn.Module):
             h = module(h, emb, comp_latent)
         h = self.out(h)
 
-        # ensemble component by mask
-        if latent_index is not None:
-            h = h * mask
-            h = h.type(x.dtype)
-            return h, mask
         if return_component:
+            # only in inference
             # mask = th.cat([mask[:, 3:4]] * self.num_components, dim=0)
             mask = mask.view(self.num_components, 1, h.shape[2], h.shape[3])
             h = (h * mask).to(dtype=x.dtype)
@@ -806,4 +805,6 @@ class UNetModel(nn.Module):
         o = h.mean(dim=1)
         o = o.to(dtype=x.dtype)
 
+        if return_mask:
+            return o, mask
         return o
